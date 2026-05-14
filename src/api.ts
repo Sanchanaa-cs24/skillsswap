@@ -19,8 +19,10 @@ const configuredApiBase =
   process.env.EXPO_PUBLIC_API_BASE ||
   Constants.expoConfig?.extra?.apiBase ||
   '';
+const runtimeLocation =
+  typeof window !== 'undefined' && window?.location ? window.location : null;
 const runtimeHost =
-  typeof window !== 'undefined' ? window.location.hostname : '';
+  runtimeLocation?.hostname || '';
 const localApiBase =
   runtimeHost === '127.0.0.1' || runtimeHost === 'localhost'
     ? 'http://localhost:4000/api'

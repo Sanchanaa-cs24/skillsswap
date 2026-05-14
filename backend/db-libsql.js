@@ -899,6 +899,55 @@ const incrementSystemUnread = async (userId, amount = 1) => {
   );
 };
 
+const upsertThread = async ({
+  id = newId('thread'),
+  userId,
+  participant,
+  topic,
+  category = 'mentor',
+  participantRole = 'Member',
+  message,
+  unread = 1,
+  quickReplies = ['Sounds good', 'Can we reschedule?', 'Sharing updates now'],
+}) => {
+  const existing = await getRow(
+    'SELECT id, unread FROM message_threads WHERE user_id = ? AND participant = ? AND topic = ?',
+    [userId, participant, topic]
+  );
+  const threadId = existing?.id || id;
+  await execute(
+    `INSERT INTO message_threads (
+      id, user_id, participant, topic, unread, last_message, last_at, category, participant_role, quick_replies
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      unread = ?,
+      last_message = ?,
+      last_at = ?,
+      category = ?,
+      participant_role = ?,
+      quick_replies = ?`,
+    [
+      threadId,
+      userId,
+      participant,
+      topic,
+      unread,
+      message,
+      nowIso(),
+      category,
+      participantRole,
+      JSON.stringify(quickReplies),
+      (existing?.unread || 0) + unread,
+      message,
+      nowIso(),
+      category,
+      participantRole,
+      JSON.stringify(quickReplies),
+    ]
+  );
+  return threadId;
+};
+
 const toggleConnect = async (userId, cardId) => {
   await init();
   const current = await getCardForUser(userId, cardId);
@@ -912,6 +961,15 @@ const toggleConnect = async (userId, cardId) => {
   });
   if (nextConnected) {
     await incrementUnreadMessages(userId, 1);
+    await upsertThread({
+      userId,
+      participant: current.name,
+      topic: `${current.skill} connection`,
+      category: 'mentor',
+      participantRole: current.persona === 'teacher' ? 'Mentor' : 'Explorer',
+      message: `Connection opened for ${current.skill}.`,
+      quickReplies: ['Excited to connect', 'Can we book a session?', 'Sharing context now'],
+    });
     await pushNotification(
       userId,
       'New connection',
@@ -1006,6 +1064,15 @@ const bookSession = async (userId, cardId, time, details = {}) => {
   );
 
   await incrementBookingUnread(userId, 1);
+  await upsertThread({
+    userId,
+    participant: card.name,
+    topic: `${card.skill} session`,
+    category: 'booking',
+    participantRole: card.persona === 'teacher' ? 'Mentor' : 'Explorer',
+    message: `Booked for ${time}. Goal: ${goal}`,
+    quickReplies: ['Confirming this works', 'Can we move the slot?', 'Sharing prep now'],
+  });
   await pushNotification(
     userId,
     'Booking confirmed',
@@ -1142,6 +1209,17 @@ const joinEvent = async (userId, eventId) => {
       [userId]
     );
     await incrementSystemUnread(userId, 1);
+    const threadId = await upsertThread({
+      id: event.thread_id || newId('thread'),
+      userId,
+      participant: event.host || 'SkillSwap host',
+      topic: event.title,
+      category: 'community',
+      participantRole: 'Host',
+      message: `Joined room: ${event.title}.`,
+      quickReplies: ['Looking forward to it', 'What should I prepare?', 'Joining with a question'],
+    });
+    await execute('UPDATE events SET thread_id = ? WHERE id = ?', [threadId, eventId]);
     await pushNotification(userId, 'Event joined', `You joined "${event.title}".`, 'community', event.title);
   }
   return (await getEvents(userId)).find((item) => item.id === eventId) || null;

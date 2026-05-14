@@ -44,9 +44,13 @@ const PRODUCTION_API_BASE = 'https://skills-swap-kappa.vercel.app/api';
 const configuredApiBase =
   process.env.EXPO_PUBLIC_API_BASE || PRODUCTION_API_BASE;
 const isWeb = Platform.OS === 'web';
+const runtimeOrigin =
+  typeof window !== 'undefined' && window?.location?.origin
+    ? window.location.origin
+    : '';
 const calendarBaseUrl =
   isWeb
-    ? window.location.origin
+    ? runtimeOrigin || configuredApiBase.replace(/\/api$/, '')
     : configuredApiBase.replace(/\/api$/, '') || 'https://skills-swap-kappa.vercel.app';
 const displayFont = Platform.select({
   web: '"Avenir Next", "SF Pro Display", system-ui, sans-serif',
@@ -769,6 +773,8 @@ export default function App() {
 
   const getCardById = (cardId: string) => cards.find((item) => item.id === cardId) || null;
   const getCardByName = (name: string) => cards.find((item) => item.name === name) || null;
+  const getThreadById = (threadId?: string) =>
+    threadId ? threads.find((item) => item.id === threadId) || null : null;
   const getMemberInsight = (card: DiscoveryCard): MemberInsight => {
     return (
       memberInsights[card.id] ?? {
@@ -3169,6 +3175,19 @@ export default function App() {
               <Text style={styles.softButtonText}>Open host</Text>
             </Pressable>
           ) : null}
+          {currentRoute?.kind === 'event' && getThreadById(currentRoute.event.threadId) ? (
+            <Pressable
+              style={({ pressed }) => [styles.ghostButton, pressed && styles.pressedScale]}
+              onPress={() => {
+                const thread = getThreadById(currentRoute.event.threadId);
+                if (thread) {
+                  openThread(thread);
+                }
+              }}
+            >
+              <Text style={styles.ghostButtonText}>Open discussion</Text>
+            </Pressable>
+          ) : null}
           <Pressable
             style={({ pressed }) => [styles.ghostButton, pressed && styles.pressedScale]}
             onPress={() => {
@@ -3616,6 +3635,23 @@ export default function App() {
           >
             <Text style={styles.softButtonText}>Back to app</Text>
           </Pressable>
+          {currentRoute?.kind === 'booking-confirmed' ? (
+            <Pressable
+              style={({ pressed }) => [styles.ghostButton, pressed && styles.pressedScale]}
+              onPress={() => {
+                const thread = threads.find(
+                  (item) =>
+                    item.participant === currentRoute.session.with &&
+                    item.topic.toLowerCase().includes(currentRoute.session.skill.toLowerCase())
+                );
+                if (thread) {
+                  openThread(thread);
+                }
+              }}
+            >
+              <Text style={styles.ghostButtonText}>Open thread</Text>
+            </Pressable>
+          ) : null}
         </View>
       </View>
     </View>
