@@ -1,0 +1,46 @@
+const fallbackApiBase = 'https://skills-swap-kappa.vercel.app/api';
+const apiBase = process.env.EXPO_PUBLIC_API_BASE || fallbackApiBase;
+
+module.exports = {
+  expo: {
+    name: 'SkillsSwap',
+    slug: 'SkillsSwap',
+    scheme: 'skillsswap',
+    version: '1.0.0',
+    orientation: 'portrait',
+    icon: './assets/icon.png',
+    userInterfaceStyle: 'light',
+    plugins: ['expo-dev-client'],
+    splash: {
+      image: './assets/splash-icon.png',
+      resizeMode: 'contain',
+      backgroundColor: '#07120f',
+    },
+    ios: {
+      supportsTablet: true,
+      bundleIdentifier: 'com.jnandev.skillsswap',
+      infoPlist: {
+        ITSAppUsesNonExemptEncryption: false,
+      },
+    },
+    android: {
+      package: 'com.jnandev.skillsswap',
+      adaptiveIcon: {
+        backgroundColor: '#E6F4FE',
+        foregroundImage: './assets/android-icon-foreground.png',
+        backgroundImage: './assets/android-icon-background.png',
+        monochromeImage: './assets/android-icon-monochrome.png',
+      },
+      predictiveBackGestureEnabled: false,
+    },
+    web: {
+      favicon: './assets/favicon.png',
+    },
+    extra: {
+      apiBase,
+      eas: {
+        projectId: '66691d8a-7f17-4fab-8261-5128c84b5d03',
+      },
+    },
+  },
+};
