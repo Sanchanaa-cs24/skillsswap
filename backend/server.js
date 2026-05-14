@@ -11,6 +11,7 @@ const db = require('./db');
 
 const app = express();
 const dbReady = db.init();
+const streamClients = new Map();
 
 app.use(
   cors({
@@ -87,8 +88,49 @@ const authRequired = (req, res, next) => {
   return next();
 };
 
+const sendStreamEvent = (userId, payload) => {
+  const clients = streamClients.get(userId);
+  if (!clients || !clients.size) return;
+  const message = `data: ${JSON.stringify(payload)}\n\n`;
+  clients.forEach((client) => client.write(message));
+};
+
+const sendRefresh = (userId, scope = 'all') => {
+  sendStreamEvent(userId, {
+    type: 'refresh',
+    scope,
+    at: new Date().toISOString(),
+  });
+};
+
 app.get('/api/health', (_, res) => {
   res.json({ ok: true });
+});
+
+app.get('/api/stream', authRequired, (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  const userId = req.userId;
+  const clients = streamClients.get(userId) || new Set();
+  clients.add(res);
+  streamClients.set(userId, clients);
+  res.write(`data: ${JSON.stringify({ type: 'connected', at: new Date().toISOString() })}\n\n`);
+
+  const keepAlive = setInterval(() => {
+    res.write(`: ping ${Date.now()}\n\n`);
+  }, 25000);
+
+  req.on('close', () => {
+    clearInterval(keepAlive);
+    const nextClients = streamClients.get(userId);
+    nextClients?.delete(res);
+    if (!nextClients?.size) {
+      streamClients.delete(userId);
+    }
+  });
 });
 
 app.get(
@@ -153,7 +195,31 @@ app.patch('/api/profile', authRequired, asyncHandler(async (req, res) => {
   if (!nextUser) {
     return res.status(404).json({ error: 'User not found' });
   }
+  sendRefresh(req.userId, 'profile');
   return res.json(nextUser);
+}));
+
+app.get('/api/portfolio/assets', authRequired, asyncHandler(async (req, res) => {
+  res.json(await db.getPortfolioAssets(req.userId));
+}));
+
+app.post('/api/portfolio/assets', authRequired, asyncHandler(async (req, res) => {
+  const { title, url, kind } = req.body || {};
+  if (!title || !url || !kind) {
+    return res.status(400).json({ error: 'title, url, and kind are required' });
+  }
+  const asset = await db.addPortfolioAsset(req.userId, { title, url, kind });
+  sendRefresh(req.userId, 'portfolio');
+  return res.json(asset);
+}));
+
+app.delete('/api/portfolio/assets/:id', authRequired, asyncHandler(async (req, res) => {
+  const ok = await db.removePortfolioAsset(req.userId, req.params.id);
+  if (!ok) {
+    return res.status(404).json({ error: 'Asset not found' });
+  }
+  sendRefresh(req.userId, 'portfolio');
+  return res.json({ ok: true });
 }));
 
 app.get('/api/categories', authRequired, asyncHandler(async (_, res) => {
@@ -176,6 +242,7 @@ app.post('/api/discovery/:id/connect', authRequired, asyncHandler(async (req, re
   if (!card) {
     return res.status(404).json({ error: 'Card not found' });
   }
+  sendRefresh(req.userId, 'discovery');
   return res.json(card);
 }));
 
@@ -184,6 +251,7 @@ app.post('/api/discovery/:id/favorite', authRequired, asyncHandler(async (req, r
   if (!card) {
     return res.status(404).json({ error: 'Card not found' });
   }
+  sendRefresh(req.userId, 'discovery');
   return res.json(card);
 }));
 
@@ -200,6 +268,7 @@ app.post('/api/sessions/book', authRequired, asyncHandler(async (req, res) => {
   if (!booking) {
     return res.status(404).json({ error: 'Discovery card not found' });
   }
+  sendRefresh(req.userId, 'sessions');
   return res.json(booking);
 }));
 
@@ -208,6 +277,7 @@ app.patch('/api/sessions/:id', authRequired, asyncHandler(async (req, res) => {
   if (!session) {
     return res.status(404).json({ error: 'Session not found' });
   }
+  sendRefresh(req.userId, 'sessions');
   return res.json(session);
 }));
 
@@ -221,6 +291,7 @@ app.patch('/api/sessions/:id/status', authRequired, asyncHandler(async (req, res
   if (!session) {
     return res.status(404).json({ error: 'Session not found' });
   }
+  sendRefresh(req.userId, 'sessions');
   return res.json(session);
 }));
 
@@ -264,6 +335,7 @@ app.post('/api/events/:id/join', authRequired, asyncHandler(async (req, res) => 
   if (!event) {
     return res.status(404).json({ error: 'Event not found' });
   }
+  sendRefresh(req.userId, 'events');
   return res.json(event);
 }));
 
@@ -272,7 +344,25 @@ app.post('/api/events/:id/reminder', authRequired, asyncHandler(async (req, res)
   if (!event) {
     return res.status(404).json({ error: 'Event not found' });
   }
+  sendRefresh(req.userId, 'events');
   return res.json(event);
+}));
+
+app.get('/api/events/:id/discussion', authRequired, asyncHandler(async (req, res) => {
+  res.json(await db.getEventDiscussion(req.userId, req.params.id));
+}));
+
+app.post('/api/events/:id/discussion', authRequired, asyncHandler(async (req, res) => {
+  const { message } = req.body || {};
+  if (!message || !String(message).trim()) {
+    return res.status(400).json({ error: 'message is required' });
+  }
+  const discussion = await db.postEventDiscussion(req.userId, req.params.id, message);
+  if (!discussion) {
+    return res.status(404).json({ error: 'Event not found' });
+  }
+  sendRefresh(req.userId, 'discussion');
+  return res.json(discussion);
 }));
 
 app.get('/api/learning-plan', authRequired, asyncHandler(async (req, res) => {
@@ -298,7 +388,9 @@ app.get('/api/messages', authRequired, asyncHandler(async (req, res) => {
 }));
 
 app.post('/api/messages/read', authRequired, asyncHandler(async (req, res) => {
-  res.json(await db.markMessagesRead(req.userId));
+  const data = await db.markMessagesRead(req.userId);
+  sendRefresh(req.userId, 'messages');
+  res.json(data);
 }));
 
 app.get('/api/notifications', authRequired, asyncHandler(async (req, res) => {
@@ -306,7 +398,9 @@ app.get('/api/notifications', authRequired, asyncHandler(async (req, res) => {
 }));
 
 app.post('/api/notifications/read', authRequired, asyncHandler(async (req, res) => {
-  res.json(await db.markNotificationsRead(req.userId));
+  const data = await db.markNotificationsRead(req.userId);
+  sendRefresh(req.userId, 'notifications');
+  res.json(data);
 }));
 
 app.get('/api/messages/threads', authRequired, asyncHandler(async (req, res) => {
@@ -322,11 +416,39 @@ app.post('/api/messages/threads/:id/reply', authRequired, asyncHandler(async (re
   if (!thread) {
     return res.status(404).json({ error: 'Thread not found' });
   }
+  sendRefresh(req.userId, 'threads');
   return res.json(thread);
 }));
 
 app.get('/api/admin/dashboard', authRequired, asyncHandler(async (req, res) => {
   res.json(await db.getAdminDashboard(req.userId));
+}));
+
+app.post('/api/admin/mentors/:id/feature', authRequired, asyncHandler(async (req, res) => {
+  const card = await db.featureMentor(req.userId, req.params.id, Boolean(req.body?.featured));
+  if (!card) {
+    return res.status(404).json({ error: 'Mentor not found' });
+  }
+  sendRefresh(req.userId, 'admin');
+  return res.json(card);
+}));
+
+app.post('/api/admin/reports/:id/resolve', authRequired, asyncHandler(async (req, res) => {
+  const dashboard = await db.resolveAdminReport(req.userId, req.params.id);
+  if (!dashboard) {
+    return res.status(404).json({ error: 'Report not found' });
+  }
+  sendRefresh(req.userId, 'admin');
+  return res.json(dashboard);
+}));
+
+app.patch('/api/admin/events/:id', authRequired, asyncHandler(async (req, res) => {
+  const event = await db.updateAdminEvent(req.userId, req.params.id, req.body || {});
+  if (!event) {
+    return res.status(404).json({ error: 'Event not found' });
+  }
+  sendRefresh(req.userId, 'events');
+  return res.json(event);
 }));
 
 app.use((error, _req, res, _next) => {

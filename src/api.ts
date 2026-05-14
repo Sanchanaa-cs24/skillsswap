@@ -7,7 +7,9 @@ import type {
   LearningPlan,
   MessageThread,
   Messages,
+  PortfolioAsset,
   PublicOverview,
+  RoomDiscussionMessage,
   Session,
   User,
 } from './types';
@@ -29,6 +31,8 @@ const localApiBase =
     : '';
 const API_BASE = localApiBase || configuredApiBase || PRODUCTION_API_BASE;
 let authToken = '';
+
+export const getApiBase = () => API_BASE;
 
 export const setAuthToken = (token: string) => {
   authToken = token;
@@ -142,4 +146,40 @@ export const api = {
       body: JSON.stringify({ message }),
     }),
   adminDashboard: () => request<AdminDashboard>('/admin/dashboard'),
+  featureMentor: (id: string, featured: boolean) =>
+    request<DiscoveryCard>(`/admin/mentors/${id}/feature`, {
+      method: 'POST',
+      body: JSON.stringify({ featured }),
+    }),
+  resolveReport: (id: string) =>
+    request<AdminDashboard>(`/admin/reports/${id}/resolve`, {
+      method: 'POST',
+    }),
+  updateAdminEvent: (
+    id: string,
+    payload: {
+      recap?: string;
+    }
+  ) =>
+    request<CommunityEvent>(`/admin/events/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  portfolioAssets: () => request<PortfolioAsset[]>('/portfolio/assets'),
+  addPortfolioAsset: (payload: Pick<PortfolioAsset, 'title' | 'url' | 'kind'>) =>
+    request<PortfolioAsset>('/portfolio/assets', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  removePortfolioAsset: (id: string) =>
+    request<{ ok: boolean }>(`/portfolio/assets/${id}`, {
+      method: 'DELETE',
+    }),
+  eventDiscussion: (id: string) =>
+    request<RoomDiscussionMessage[]>(`/events/${id}/discussion`),
+  postEventDiscussion: (id: string, message: string) =>
+    request<RoomDiscussionMessage>(`/events/${id}/discussion`, {
+      method: 'POST',
+      body: JSON.stringify({ message }),
+    }),
 };

@@ -214,6 +214,25 @@ const rowToThread = (row) => ({
   quickReplies: parseList(row.quick_replies),
 });
 
+const rowToPortfolioAsset = (row) => ({
+  id: row.id,
+  title: row.title,
+  url: row.url,
+  kind: row.kind,
+  createdAt: row.created_at,
+});
+
+const rowToRoomMessage = (row) => ({
+  id: row.id,
+  eventId: row.event_id,
+  author: row.author,
+  role: row.role,
+  message: row.message,
+  createdAt: row.created_at,
+  pinned: Boolean(row.pinned),
+  system: Boolean(row.system),
+});
+
 const profileCompleted = (user) =>
   Boolean(
     user.headline &&
@@ -378,6 +397,32 @@ const runMigrations = async () => {
       category TEXT NOT NULL DEFAULT 'mentor',
       participant_role TEXT NOT NULL DEFAULT 'Member',
       quick_replies TEXT NOT NULL DEFAULT '[]'
+    )`,
+    `CREATE TABLE IF NOT EXISTS portfolio_assets (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      url TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'link',
+      created_at TEXT NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS room_messages (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      event_id TEXT NOT NULL,
+      author TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'Member',
+      message TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      pinned INTEGER NOT NULL DEFAULT 0,
+      system INTEGER NOT NULL DEFAULT 0
+    )`,
+    `CREATE TABLE IF NOT EXISTS admin_reports (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      severity TEXT NOT NULL DEFAULT 'low',
+      status TEXT NOT NULL DEFAULT 'open'
     )`,
   ];
 
@@ -673,6 +718,53 @@ const seedDatabase = async () => {
       ]
     );
   }
+
+  const seededAssets = (demoUser.portfolioProjects || []).slice(0, 2);
+  for (const assetTitle of seededAssets) {
+    await execute(
+      `INSERT INTO portfolio_assets (id, user_id, title, url, kind, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        newId('asset'),
+        demoUserId,
+        assetTitle,
+        `https://portfolio.skillsswap.app/${encodeURIComponent(assetTitle.toLowerCase().replace(/\s+/g, '-'))}`,
+        'link',
+        nowIso(),
+      ]
+    );
+  }
+
+  for (const event of seed.events.slice(0, 4)) {
+    await execute(
+      `INSERT INTO room_messages (id, user_id, event_id, author, role, message, created_at, pinned, system)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        newId('roommsg'),
+        demoUserId,
+        event.id,
+        event.host || 'SkillSwap host',
+        'Host',
+        `Welcome to ${event.title}. Share what you want to learn or contribute before we start.`,
+        nowIso(),
+        1,
+        1,
+      ]
+    );
+  }
+
+  const reports = [
+    ['report-1', '2 room summaries need host recap', 'medium', 'open'],
+    ['report-2', '1 trending mentor should be featured', 'low', 'open'],
+    ['report-3', 'Booking completion dipped in one thread cluster', 'high', 'open'],
+  ];
+  for (const [id, label, severity, status] of reports) {
+    await execute(
+      `INSERT INTO admin_reports (id, user_id, label, severity, status)
+       VALUES (?, ?, ?, ?, ?)`,
+      [id, demoUserId, label, severity, status]
+    );
+  }
 };
 
 let initPromise;
@@ -712,6 +804,11 @@ const getUserByEmail = async (email) =>
 
 const getUserById = async (userId) =>
   enrichUser(sanitizeUserRow(await getRow('SELECT * FROM users WHERE id = ?', [userId])));
+
+const requireOperator = async (userId) => {
+  const user = await getUserById(userId);
+  return Boolean(user?.operatorMode);
+};
 
 const verifyPassword = (userRow, password) =>
   Boolean(userRow && bcrypt.compareSync(String(password), userRow.password_hash));
@@ -1351,6 +1448,96 @@ const replyThread = async (userId, threadId, message) => {
   );
 };
 
+const getPortfolioAssets = async (userId) =>
+  (
+    await getAll(
+      `SELECT * FROM portfolio_assets
+       WHERE user_id = ?
+       ORDER BY datetime(created_at) DESC`,
+      [userId]
+    )
+  ).map(rowToPortfolioAsset);
+
+const addPortfolioAsset = async (userId, payload) => {
+  await init();
+  const asset = {
+    id: newId('asset'),
+    title: String(payload.title || '').trim(),
+    url: String(payload.url || '').trim(),
+    kind: String(payload.kind || 'link').trim(),
+    createdAt: nowIso(),
+  };
+  await execute(
+    `INSERT INTO portfolio_assets (id, user_id, title, url, kind, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [asset.id, userId, asset.title, asset.url, asset.kind, asset.createdAt]
+  );
+  return asset;
+};
+
+const removePortfolioAsset = async (userId, assetId) => {
+  await init();
+  const existing = await getRow(
+    'SELECT id FROM portfolio_assets WHERE id = ? AND user_id = ?',
+    [assetId, userId]
+  );
+  if (!existing) return false;
+  await execute('DELETE FROM portfolio_assets WHERE id = ? AND user_id = ?', [assetId, userId]);
+  return true;
+};
+
+const getEventDiscussion = async (userId, eventId) => {
+  await init();
+  const event = await getRow('SELECT id FROM events WHERE id = ?', [eventId]);
+  if (!event) return [];
+  return (
+    await getAll(
+      `SELECT * FROM room_messages
+       WHERE user_id = ? AND event_id = ?
+       ORDER BY pinned DESC, datetime(created_at) ASC`,
+      [userId, eventId]
+    )
+  ).map(rowToRoomMessage);
+};
+
+const postEventDiscussion = async (userId, eventId, message) => {
+  await init();
+  const event = await getRow('SELECT * FROM events WHERE id = ?', [eventId]);
+  const user = await getUserById(userId);
+  if (!event || !user) return null;
+  const next = {
+    id: newId('roommsg'),
+    eventId,
+    author: user.name,
+    role: user.operatorMode ? 'Operator' : 'Member',
+    message: String(message).trim(),
+    createdAt: nowIso(),
+    pinned: false,
+    system: false,
+  };
+  const threadId = event.thread_id || newId('thread');
+  await execute(
+    `INSERT INTO room_messages (id, user_id, event_id, author, role, message, created_at, pinned, system)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)`,
+    [next.id, userId, next.eventId, next.author, next.role, next.message, next.createdAt]
+  );
+  await incrementSystemUnread(userId, 1);
+  await upsertThread({
+    id: threadId,
+    userId,
+    participant: event.host || 'SkillSwap host',
+    topic: event.title,
+    category: 'community',
+    participantRole: 'Host',
+    message: next.message,
+    quickReplies: ['Thanks for the context', 'I can help with that', 'Sharing my notes after the room'],
+  });
+  if (!event.thread_id) {
+    await execute('UPDATE events SET thread_id = ? WHERE id = ?', [threadId, eventId]);
+  }
+  return next;
+};
+
 const getAdminDashboard = async (userId) => {
   await init();
   const featuredMentors = (
@@ -1383,6 +1570,21 @@ const getAdminDashboard = async (userId) => {
     title: item.title,
     participants: item.participants,
     joined: item.joined,
+    category: item.category,
+    recap: item.recap,
+  }));
+  const reports = (
+    await getAll(
+      `SELECT * FROM admin_reports
+       WHERE user_id = ?
+       ORDER BY CASE severity WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC, id ASC`,
+      [userId]
+    )
+  ).map((row) => ({
+    id: row.id,
+    label: row.label,
+    severity: row.severity,
+    status: row.status,
   }));
   return {
     featuredMentors,
@@ -1394,12 +1596,61 @@ const getAdminDashboard = async (userId) => {
       completed: Number(bookingHealthRow?.completed || 0),
     },
     roomHealth,
-    reports: [
-      { id: 'report-1', label: '2 room summaries need host recap', severity: 'medium' },
-      { id: 'report-2', label: '1 trending mentor should be featured', severity: 'low' },
-      { id: 'report-3', label: 'Booking completion dipped in one thread cluster', severity: 'high' },
-    ],
+    reports,
   };
+};
+
+const featureMentor = async (userId, cardId, featured) => {
+  await init();
+  if (!(await requireOperator(userId))) {
+    return null;
+  }
+  await execute(
+    `UPDATE discovery_cards
+     SET featured = ?
+     WHERE id = ? AND persona = 'teacher'`,
+    [boolInt(featured), cardId]
+  );
+  const card = await getCardForUser(userId, cardId);
+  return card ? rowToCard(card) : null;
+};
+
+const resolveAdminReport = async (userId, reportId) => {
+  await init();
+  if (!(await requireOperator(userId))) {
+    return null;
+  }
+  const existing = await getRow(
+    'SELECT id FROM admin_reports WHERE id = ? AND user_id = ?',
+    [reportId, userId]
+  );
+  if (!existing) return null;
+  await execute(
+    `UPDATE admin_reports
+     SET status = 'resolved'
+     WHERE id = ? AND user_id = ?`,
+    [reportId, userId]
+  );
+  await pushNotification(
+    userId,
+    'Operator update',
+    'One report has been resolved and removed from the open queue.',
+    'system',
+    'Operator console'
+  );
+  return getAdminDashboard(userId);
+};
+
+const updateAdminEvent = async (userId, eventId, updates) => {
+  await init();
+  if (!(await requireOperator(userId))) {
+    return null;
+  }
+  const event = await getRow('SELECT * FROM events WHERE id = ?', [eventId]);
+  if (!event) return null;
+  const recap = typeof updates.recap === 'string' ? updates.recap.trim() : event.recap;
+  await execute('UPDATE events SET recap = ? WHERE id = ?', [recap, eventId]);
+  return (await getEvents(userId)).find((item) => item.id === eventId) || null;
 };
 
 module.exports = {
@@ -1430,5 +1681,13 @@ module.exports = {
   markNotificationsRead,
   getMessageThreads,
   replyThread,
+  getPortfolioAssets,
+  addPortfolioAsset,
+  removePortfolioAsset,
+  getEventDiscussion,
+  postEventDiscussion,
   getAdminDashboard,
+  featureMentor,
+  resolveAdminReport,
+  updateAdminEvent,
 };

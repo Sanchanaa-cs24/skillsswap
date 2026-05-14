@@ -63,6 +63,25 @@ export type CommunityEvent = {
   threadId?: string;
 };
 
+export type PortfolioAsset = {
+  id: string;
+  title: string;
+  url: string;
+  kind: 'image' | 'video' | 'doc' | 'link';
+  createdAt: string;
+};
+
+export type RoomDiscussionMessage = {
+  id: string;
+  eventId: string;
+  author: string;
+  role: string;
+  message: string;
+  createdAt: string;
+  pinned?: boolean;
+  system?: boolean;
+};
+
 export type LearningPlan = {
   profileCompleted: boolean;
   firstSessionBooked: boolean;
@@ -101,6 +120,13 @@ export type MessageThread = {
   category?: 'mentor' | 'booking' | 'community' | 'system';
   participantRole?: string;
   quickReplies?: string[];
+};
+
+export type AdminReport = {
+  id: string;
+  label: string;
+  severity: 'low' | 'medium' | 'high';
+  status: 'open' | 'resolved';
 };
 
 export type User = {
@@ -151,10 +177,8 @@ export type AdminDashboard = {
     title: string;
     participants: number;
     joined: boolean;
+    category?: string;
+    recap?: string;
   }>;
-  reports: Array<{
-    id: string;
-    label: string;
-    severity: 'low' | 'medium' | 'high';
-  }>;
+  reports: AdminReport[];
 };

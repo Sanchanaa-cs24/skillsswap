@@ -17,9 +17,10 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { api, getAuthToken, setAuthToken } from './src/api';
+import { api, getApiBase, getAuthToken, setAuthToken } from './src/api';
 import type {
   AdminDashboard,
+  AdminReport,
   AppNotification,
   AuthResponse,
   CommunityEvent,
@@ -27,6 +28,8 @@ import type {
   LearningPlan,
   MessageThread,
   Messages,
+  PortfolioAsset,
+  RoomDiscussionMessage,
   Session,
   Tab,
   User,
@@ -394,6 +397,15 @@ export default function App() {
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [threads, setThreads] = useState<MessageThread[]>([]);
   const [adminDashboard, setAdminDashboard] = useState<AdminDashboard | null>(null);
+  const [portfolioAssets, setPortfolioAssets] = useState<PortfolioAsset[]>([]);
+  const [assetTitle, setAssetTitle] = useState('');
+  const [assetUrl, setAssetUrl] = useState('');
+  const [assetKind, setAssetKind] = useState<PortfolioAsset['kind']>('link');
+  const [roomDiscussionByEvent, setRoomDiscussionByEvent] = useState<
+    Record<string, RoomDiscussionMessage[]>
+  >({});
+  const [roomDrafts, setRoomDrafts] = useState<Record<string, string>>({});
+  const [adminRecapDrafts, setAdminRecapDrafts] = useState<Record<string, string>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [navStack, setNavStack] = useState<AppRoute[]>([]);
   const [slot, setSlot] = useState('');
@@ -579,6 +591,10 @@ export default function App() {
     setNotifications([]);
     setThreads([]);
     setAdminDashboard(null);
+    setPortfolioAssets([]);
+    setRoomDiscussionByEvent({});
+    setRoomDrafts({});
+    setAdminRecapDrafts({});
     setDrafts({});
     setNavStack([]);
     setSlot('');
@@ -598,6 +614,7 @@ export default function App() {
       nextNotifications,
       nextThreads,
       nextAdminDashboard,
+      nextPortfolioAssets,
     ] = await Promise.all([
       api.categories(),
       api.discovery(query, category, persona),
@@ -608,6 +625,7 @@ export default function App() {
       api.notifications(),
       api.messageThreads(),
       api.adminDashboard().catch(() => null),
+      api.portfolioAssets().catch(() => []),
     ]);
 
     setCategories(['All', ...nextCategories]);
@@ -619,6 +637,15 @@ export default function App() {
     setNotifications(nextNotifications);
     setThreads(nextThreads);
     setAdminDashboard(nextAdminDashboard);
+    setPortfolioAssets(nextPortfolioAssets);
+  };
+
+  const loadEventDiscussion = async (eventId: string) => {
+    const messagesForRoom = await api.eventDiscussion(eventId).catch(() => []);
+    setRoomDiscussionByEvent((previous) => ({
+      ...previous,
+      [eventId]: messagesForRoom,
+    }));
   };
 
   useEffect(() => {
@@ -661,17 +688,53 @@ export default function App() {
   useEffect(() => {
     if (!token || !user) return;
     const timer = setInterval(() => {
-      void Promise.all([api.messages(), api.notifications(), api.messageThreads()]).then(
-        ([nextMessages, nextNotifications, nextThreads]) => {
-          setMessages(nextMessages);
-          setNotifications(nextNotifications);
-          setThreads(nextThreads);
-        }
-      );
-    }, 10000);
+      void Promise.all([
+        api.messages(),
+        api.notifications(),
+        api.messageThreads(),
+        api.portfolioAssets().catch(() => []),
+      ]).then(([nextMessages, nextNotifications, nextThreads, nextPortfolioAssets]) => {
+        setMessages(nextMessages);
+        setNotifications(nextNotifications);
+        setThreads(nextThreads);
+        setPortfolioAssets(nextPortfolioAssets);
+      });
+    }, 5000);
 
     return () => clearInterval(timer);
   }, [token, user]);
+
+  useEffect(() => {
+    if (!token || !user || !isWeb || typeof EventSource === 'undefined') return;
+    const stream = new EventSource(`${getApiBase()}/stream?token=${encodeURIComponent(token)}`);
+    stream.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data) as { type?: string; scope?: string };
+        if (payload.type === 'refresh') {
+          void loadAll();
+          if (currentRoute?.kind === 'event') {
+            void loadEventDiscussion(currentRoute.event.id);
+          }
+        }
+      } catch {
+        // ignore malformed stream payloads
+      }
+    };
+    stream.onerror = () => {
+      stream.close();
+    };
+    return () => stream.close();
+  }, [token, user, currentRoute?.kind === 'event' ? currentRoute.event.id : '']);
+
+  useEffect(() => {
+    if (currentRoute?.kind === 'event') {
+      void loadEventDiscussion(currentRoute.event.id);
+      setAdminRecapDrafts((previous) => ({
+        ...previous,
+        [currentRoute.event.id]: previous[currentRoute.event.id] ?? (currentRoute.event.recap ?? ''),
+      }));
+    }
+  }, [currentRoute?.kind === 'event' ? currentRoute.event.id : '']);
 
   const onAuth = async () => {
     setError('');
@@ -765,6 +828,52 @@ export default function App() {
     setError('');
     setLoading(false);
     resetAppData();
+  };
+
+  const addPortfolioAsset = async () => {
+    const title = assetTitle.trim();
+    const url = assetUrl.trim();
+    if (!title || !url) return;
+    const created = await api.addPortfolioAsset({ title, url, kind: assetKind });
+    setPortfolioAssets((previous) => [created, ...previous]);
+    setAssetTitle('');
+    setAssetUrl('');
+    setAssetKind('link');
+  };
+
+  const removePortfolioAsset = async (assetId: string) => {
+    await api.removePortfolioAsset(assetId);
+    setPortfolioAssets((previous) => previous.filter((item) => item.id !== assetId));
+  };
+
+  const toggleFeaturedMentor = async (card: DiscoveryCard) => {
+    const updated = await api.featureMentor(card.id, !card.featured);
+    setCards((previous) => previous.map((item) => (item.id === updated.id ? updated : item)));
+    setAdminDashboard((previous) =>
+      previous
+        ? {
+            ...previous,
+            featuredMentors: previous.featuredMentors.map((item) =>
+              item.id === updated.id ? updated : item
+            ),
+          }
+        : previous
+    );
+    await loadAll();
+  };
+
+  const resolveOperatorReport = async (report: AdminReport) => {
+    const dashboard = await api.resolveReport(report.id);
+    setAdminDashboard(dashboard);
+  };
+
+  const saveEventRecap = async (eventId: string) => {
+    const recap = (adminRecapDrafts[eventId] ?? '').trim();
+    const updated = await api.updateAdminEvent(eventId, { recap });
+    setEvents((previous) => previous.map((item) => (item.id === updated.id ? updated : item)));
+    if (currentRoute?.kind === 'event' && currentRoute.event.id === updated.id) {
+      replaceRoute({ kind: 'event', event: updated });
+    }
   };
 
   const updateCard = (id: string, nextCard: DiscoveryCard) => {
@@ -2454,6 +2563,65 @@ export default function App() {
         </View>
 
         <View style={[styles.surfaceCard, styles.surfaceCardPhone]}>
+          {renderPhoneSectionTitle('Portfolio media')}
+          <View style={styles.infoStack}>
+            {portfolioAssets.map((item) => (
+              <View key={item.id} style={styles.listRow}>
+                <View style={styles.listRowBody}>
+                  <Text style={styles.listRowTitle}>{item.kind.toUpperCase()}</Text>
+                  <Text style={styles.listRowText}>{item.title}</Text>
+                  <Text style={styles.listRowMeta}>{item.url}</Text>
+                </View>
+                <Pressable
+                  style={({ pressed }) => [styles.ghostButton, pressed && styles.pressedScale]}
+                  onPress={() => void removePortfolioAsset(item.id)}
+                >
+                  <Text style={styles.ghostButtonText}>Remove</Text>
+                </Pressable>
+              </View>
+            ))}
+          </View>
+          <TextInput
+            style={styles.input}
+            value={assetTitle}
+            onChangeText={setAssetTitle}
+            placeholder="Asset title"
+            placeholderTextColor="#7a8a84"
+          />
+          <TextInput
+            style={styles.input}
+            value={assetUrl}
+            onChangeText={setAssetUrl}
+            placeholder="Hosted media URL"
+            placeholderTextColor="#7a8a84"
+            autoCapitalize="none"
+          />
+          <View style={styles.tagWrap}>
+            {(['link', 'image', 'video', 'doc'] as const).map((kind) => (
+              <Pressable
+                key={kind}
+                style={({ pressed }) => [
+                  styles.filterChip,
+                  assetKind === kind && styles.filterChipActive,
+                  pressed && styles.pressedScale,
+                ]}
+                onPress={() => setAssetKind(kind)}
+              >
+                <Text style={[styles.filterChipText, assetKind === kind && styles.filterChipTextActive]}>
+                  {kind}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+          <Pressable
+            style={({ pressed }) => [styles.primaryWideButton, pressed && styles.pressedScale]}
+            onPress={() => void addPortfolioAsset()}
+          >
+            <Text style={styles.primaryWideButtonText}>Add media</Text>
+          </Pressable>
+        </View>
+
+        <View style={[styles.surfaceCard, styles.surfaceCardPhone]}>
           {renderPhoneSectionTitle('Exchange focus')}
           <Text style={styles.infoLabel}>What I can help with</Text>
           <View style={styles.tagWrap}>
@@ -2498,10 +2666,36 @@ export default function App() {
               Monitor featured mentors, room health, reports, and booking quality from one admin surface.
             </Text>
             <View style={styles.infoStack}>
+              {adminDashboard.featuredMentors.map((mentor) => (
+                <View key={mentor.id} style={styles.listRow}>
+                  <View style={styles.listRowBody}>
+                    <Text style={styles.listRowTitle}>{mentor.featured ? 'FEATURED' : 'MENTOR'}</Text>
+                    <Text style={styles.listRowText}>{mentor.name}</Text>
+                  </View>
+                  <Pressable
+                    style={({ pressed }) => [styles.softButton, pressed && styles.pressedScale]}
+                    onPress={() => void toggleFeaturedMentor(mentor)}
+                  >
+                    <Text style={styles.softButtonText}>{mentor.featured ? 'Unfeature' : 'Feature'}</Text>
+                  </Pressable>
+                </View>
+              ))}
               {adminDashboard.reports.map((report) => (
                 <View key={report.id} style={styles.listRow}>
-                  <Text style={styles.listRowTitle}>{report.severity.toUpperCase()}</Text>
-                  <Text style={styles.listRowText}>{report.label}</Text>
+                  <View style={styles.listRowBody}>
+                    <Text style={styles.listRowTitle}>
+                      {report.severity.toUpperCase()} · {report.status.toUpperCase()}
+                    </Text>
+                    <Text style={styles.listRowText}>{report.label}</Text>
+                  </View>
+                  {report.status !== 'resolved' ? (
+                    <Pressable
+                      style={({ pressed }) => [styles.ghostButton, pressed && styles.pressedScale]}
+                      onPress={() => void resolveOperatorReport(report)}
+                    >
+                      <Text style={styles.ghostButtonText}>Resolve</Text>
+                    </Pressable>
+                  ) : null}
                 </View>
               ))}
             </View>
@@ -2589,6 +2783,65 @@ export default function App() {
           </View>
 
           <View style={[styles.surfaceCard, isPhone && styles.surfaceCardPhone]}>
+            <Text style={styles.surfaceTitle}>Portfolio media</Text>
+            <View style={styles.infoStack}>
+              {portfolioAssets.map((item) => (
+                <View key={item.id} style={styles.listRow}>
+                  <View style={styles.listRowBody}>
+                    <Text style={styles.listRowTitle}>{item.kind.toUpperCase()}</Text>
+                    <Text style={styles.listRowText}>{item.title}</Text>
+                    <Text style={styles.listRowMeta}>{item.url}</Text>
+                  </View>
+                  <Pressable
+                    style={({ pressed }) => [styles.ghostButton, pressed && styles.pressedScale]}
+                    onPress={() => void removePortfolioAsset(item.id)}
+                  >
+                    <Text style={styles.ghostButtonText}>Remove</Text>
+                  </Pressable>
+                </View>
+              ))}
+            </View>
+            <TextInput
+              style={styles.input}
+              value={assetTitle}
+              onChangeText={setAssetTitle}
+              placeholder="Asset title"
+              placeholderTextColor="#7a8a84"
+            />
+            <TextInput
+              style={styles.input}
+              value={assetUrl}
+              onChangeText={setAssetUrl}
+              placeholder="Hosted media URL"
+              placeholderTextColor="#7a8a84"
+              autoCapitalize="none"
+            />
+            <View style={styles.tagWrap}>
+              {(['link', 'image', 'video', 'doc'] as const).map((kind) => (
+                <Pressable
+                  key={kind}
+                  style={({ pressed }) => [
+                    styles.filterChip,
+                    assetKind === kind && styles.filterChipActive,
+                    pressed && styles.pressedScale,
+                  ]}
+                  onPress={() => setAssetKind(kind)}
+                >
+                  <Text style={[styles.filterChipText, assetKind === kind && styles.filterChipTextActive]}>
+                    {kind}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+            <Pressable
+              style={({ pressed }) => [styles.primaryWideButton, pressed && styles.pressedScale]}
+              onPress={() => void addPortfolioAsset()}
+            >
+              <Text style={styles.primaryWideButtonText}>Add media</Text>
+            </Pressable>
+          </View>
+
+          <View style={[styles.surfaceCard, isPhone && styles.surfaceCardPhone]}>
             <Text style={styles.surfaceTitle}>Exchange focus</Text>
             <Text style={styles.infoLabel}>What I can help with</Text>
             <View style={styles.tagWrap}>
@@ -2641,8 +2894,34 @@ export default function App() {
                 ))}
                 {adminDashboard.reports.map((report) => (
                   <View key={report.id} style={styles.listRow}>
-                    <Text style={styles.listRowTitle}>{report.severity.toUpperCase()}</Text>
-                    <Text style={styles.listRowText}>{report.label}</Text>
+                    <View style={styles.listRowBody}>
+                      <Text style={styles.listRowTitle}>
+                        {report.severity.toUpperCase()} · {report.status.toUpperCase()}
+                      </Text>
+                      <Text style={styles.listRowText}>{report.label}</Text>
+                    </View>
+                    {report.status !== 'resolved' ? (
+                      <Pressable
+                        style={({ pressed }) => [styles.ghostButton, pressed && styles.pressedScale]}
+                        onPress={() => void resolveOperatorReport(report)}
+                      >
+                        <Text style={styles.ghostButtonText}>Resolve</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                ))}
+                {adminDashboard.featuredMentors.map((mentor) => (
+                  <View key={mentor.id} style={styles.listRow}>
+                    <View style={styles.listRowBody}>
+                      <Text style={styles.listRowTitle}>{mentor.featured ? 'FEATURED' : 'MENTOR'}</Text>
+                      <Text style={styles.listRowText}>{mentor.name}</Text>
+                    </View>
+                    <Pressable
+                      style={({ pressed }) => [styles.softButton, pressed && styles.pressedScale]}
+                      onPress={() => void toggleFeaturedMentor(mentor)}
+                    >
+                      <Text style={styles.softButtonText}>{mentor.featured ? 'Unfeature' : 'Feature'}</Text>
+                    </Pressable>
                   </View>
                 ))}
               </View>
@@ -3123,6 +3402,78 @@ export default function App() {
           {currentRoute?.kind === 'event' ? getEventGuide(currentRoute.event).reminder : ''}
         </Text>
       </View>
+
+      <View style={[styles.surfaceCard, styles.surfaceCardPhone]}>
+        {renderPhoneSectionTitle('Room discussion')}
+        <View style={styles.infoStack}>
+          {(currentRoute?.kind === 'event'
+            ? roomDiscussionByEvent[currentRoute.event.id] ?? []
+            : []
+          ).map((item) => (
+            <View key={item.id} style={styles.listRow}>
+              <View style={styles.listRowBody}>
+                <Text style={styles.listRowTitle}>
+                  {item.author} · {item.role}
+                </Text>
+                <Text style={styles.listRowText}>{item.message}</Text>
+                <Text style={styles.listRowMeta}>
+                  {item.pinned ? 'Pinned update' : new Date(item.createdAt).toLocaleString()}
+                </Text>
+              </View>
+            </View>
+          ))}
+        </View>
+        <TextInput
+          style={[styles.input, styles.multilineInput]}
+          value={currentRoute?.kind === 'event' ? roomDrafts[currentRoute.event.id] ?? '' : ''}
+          onChangeText={(value) => {
+            if (currentRoute?.kind !== 'event') return;
+            setRoomDrafts((previous) => ({ ...previous, [currentRoute.event.id]: value }));
+          }}
+          placeholder="Share a question, context note, or takeaway"
+          placeholderTextColor="#7a8a84"
+          multiline
+        />
+        <Pressable
+          style={({ pressed }) => [styles.primaryWideButton, pressed && styles.pressedScale]}
+          onPress={() => {
+            if (currentRoute?.kind !== 'event') return;
+            const text = (roomDrafts[currentRoute.event.id] ?? '').trim();
+            if (!text) return;
+            void api.postEventDiscussion(currentRoute.event.id, text).then((created) => {
+              setRoomDiscussionByEvent((previous) => ({
+                ...previous,
+                [currentRoute.event.id]: [...(previous[currentRoute.event.id] ?? []), created],
+              }));
+              setRoomDrafts((previous) => ({ ...previous, [currentRoute.event.id]: '' }));
+            });
+          }}
+        >
+          <Text style={styles.primaryWideButtonText}>Post to room</Text>
+        </Pressable>
+      </View>
+
+      {user?.operatorMode && currentRoute?.kind === 'event' ? (
+        <View style={[styles.surfaceCard, styles.surfaceCardPhone]}>
+          {renderPhoneSectionTitle('Operator recap')}
+          <TextInput
+            style={[styles.input, styles.multilineInput]}
+            value={adminRecapDrafts[currentRoute.event.id] ?? ''}
+            onChangeText={(value) =>
+              setAdminRecapDrafts((previous) => ({ ...previous, [currentRoute.event.id]: value }))
+            }
+            placeholder="Write the room recap for participants"
+            placeholderTextColor="#7a8a84"
+            multiline
+          />
+          <Pressable
+            style={({ pressed }) => [styles.softButton, pressed && styles.pressedScale]}
+            onPress={() => void saveEventRecap(currentRoute.event.id)}
+          >
+            <Text style={styles.softButtonText}>Publish recap</Text>
+          </Pressable>
+        </View>
+      ) : null}
 
       <View style={[styles.surfaceCard, styles.surfaceCardPhone]}>
         {renderPhoneSectionTitle('Actions')}
@@ -5149,6 +5500,10 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: '#e7dece',
+  },
+  listRowBody: {
+    flex: 1,
+    gap: 4,
   },
   listRowTitle: {
     color: '#17211d',

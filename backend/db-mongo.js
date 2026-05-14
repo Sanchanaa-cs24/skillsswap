@@ -39,6 +39,13 @@ const rowToUser = (row) => {
     country: row.country,
     skillsOffered: row.skills_offered || [],
     skillsToLearn: row.skills_to_learn || [],
+    portfolioProjects: row.portfolio_projects || [],
+    verifiedSkills: row.verified_skills || [],
+    endorsements: row.endorsements || [],
+    reviews: row.reviews || [],
+    helpOffered: row.help_offered || [],
+    helpWanted: row.help_wanted || [],
+    operatorMode: Boolean(row.operator_mode),
     createdAt: row.created_at,
   };
 };
@@ -56,6 +63,15 @@ const rowToCard = (row, state = {}) => ({
   nextSessionSlots: row.next_session_slots || [],
   connected: Boolean(state.connected),
   favorited: Boolean(state.favorited),
+  verifiedSkills: row.verified_skills || [],
+  helpOffered: row.help_offered || [],
+  helpWanted: row.help_wanted || [],
+  portfolioProjects: row.portfolio_projects || [],
+  endorsements: row.endorsements || [],
+  reviews: row.reviews || [],
+  completedSessions: Number(row.completed_sessions || 0),
+  repeatLearners: Number(row.repeat_learners || 0),
+  featured: Boolean(row.featured),
 });
 
 const rowToSession = (row) => ({
@@ -67,6 +83,32 @@ const rowToSession = (row) => ({
   status: row.status,
   createdAt: row.created_at,
   calendarUrl: row.calendar_url,
+  format: row.format,
+  goal: row.goal,
+  note: row.note,
+  reminderSet: Boolean(row.reminder_set),
+  meetingLink: row.meeting_link,
+  checklist: row.checklist || [],
+  resources: row.resources || [],
+  followUp: row.follow_up,
+});
+
+const rowToEvent = (row, joined = false, participants = 0) => ({
+  id: row.id,
+  title: row.title,
+  description: row.description,
+  participants,
+  joined,
+  format: row.format,
+  host: row.host,
+  location: row.location,
+  category: row.category,
+  agenda: row.agenda || [],
+  attendeePreview: row.attendee_preview || [],
+  recurringLabel: row.recurring_label || '',
+  reminderSet: Boolean(row.reminder_set),
+  recap: row.recap || '',
+  threadId: row.thread_id || '',
 });
 
 const rowToLearningPlan = (row) => ({
@@ -75,6 +117,9 @@ const rowToLearningPlan = (row) => ({
   challengeJoined: Boolean(row.challenge_joined),
   skillsTarget: Number(row.skills_target),
   skillsCompleted: Number(row.skills_completed),
+  completedSessions: Number(row.completed_sessions || 0),
+  roomsJoined: Number(row.rooms_joined || 0),
+  savedProfiles: Number(row.saved_profiles || 0),
 });
 
 const rowToNotification = (row) => ({
@@ -83,6 +128,8 @@ const rowToNotification = (row) => ({
   detail: row.detail,
   createdAt: row.created_at,
   read: Boolean(row.read),
+  kind: row.kind,
+  actor: row.actor,
 });
 
 const rowToThread = (row) => ({
@@ -92,6 +139,28 @@ const rowToThread = (row) => ({
   unread: Number(row.unread),
   lastMessage: row.last_message,
   lastAt: row.last_at,
+  category: row.category,
+  participantRole: row.participant_role,
+  quickReplies: row.quick_replies || [],
+});
+
+const rowToPortfolioAsset = (row) => ({
+  id: row.id,
+  title: row.title,
+  url: row.url,
+  kind: row.kind,
+  createdAt: row.created_at,
+});
+
+const rowToRoomMessage = (row) => ({
+  id: row.id,
+  eventId: row.event_id,
+  author: row.author,
+  role: row.role,
+  message: row.message,
+  createdAt: row.created_at,
+  pinned: Boolean(row.pinned),
+  system: Boolean(row.system),
 });
 
 const collections = () => ({
@@ -106,6 +175,9 @@ const collections = () => ({
   messages: database.collection('messages'),
   notifications: database.collection('notifications'),
   messageThreads: database.collection('message_threads'),
+  portfolioAssets: database.collection('portfolio_assets'),
+  roomMessages: database.collection('room_messages'),
+  adminReports: database.collection('admin_reports'),
 });
 
 const ensureIndexes = async () => {
@@ -126,6 +198,12 @@ const ensureIndexes = async () => {
     c.notifications.createIndex({ user_id: 1, created_at: -1 }),
     c.messageThreads.createIndex({ id: 1 }, { unique: true }),
     c.messageThreads.createIndex({ user_id: 1, last_at: -1 }),
+    c.portfolioAssets.createIndex({ id: 1 }, { unique: true }),
+    c.portfolioAssets.createIndex({ user_id: 1, created_at: -1 }),
+    c.roomMessages.createIndex({ id: 1 }, { unique: true }),
+    c.roomMessages.createIndex({ user_id: 1, event_id: 1, created_at: 1 }),
+    c.adminReports.createIndex({ id: 1 }, { unique: true }),
+    c.adminReports.createIndex({ user_id: 1, status: 1 }),
   ]);
 };
 
@@ -141,6 +219,9 @@ const ensureUserState = async (userId, overrides = {}) => {
         challenge_joined: Boolean(overrides.challengeJoined),
         skills_target: overrides.skillsTarget ?? 4,
         skills_completed: overrides.skillsCompleted ?? 0,
+        completed_sessions: overrides.completedSessions ?? 0,
+        rooms_joined: overrides.roomsJoined ?? 0,
+        saved_profiles: overrides.savedProfiles ?? 0,
       },
     },
     { upsert: true }
@@ -152,13 +233,16 @@ const ensureUserState = async (userId, overrides = {}) => {
       $setOnInsert: {
         user_id: userId,
         unread_count: overrides.unreadCount ?? 0,
+        human_unread: overrides.humanUnread ?? 0,
+        system_unread: overrides.systemUnread ?? 0,
+        booking_unread: overrides.bookingUnread ?? 0,
       },
     },
     { upsert: true }
   );
 };
 
-const pushNotification = async (userId, title, detail) => {
+const pushNotification = async (userId, title, detail, kind = 'system', actor = '') => {
   await collections().notifications.insertOne({
     id: newId('n'),
     user_id: userId,
@@ -166,6 +250,8 @@ const pushNotification = async (userId, title, detail) => {
     detail,
     created_at: nowIso(),
     read: false,
+    kind,
+    actor,
   });
 };
 
@@ -192,6 +278,15 @@ const seedDatabase = async () => {
         rating: Number(card.rating),
         bio: card.bio,
         next_session_slots: card.nextSessionSlots,
+        verified_skills: card.verifiedSkills || [card.skill, card.category],
+        help_offered: card.helpOffered || [card.skill],
+        help_wanted: card.helpWanted || ['Peer exchange'],
+        portfolio_projects: card.portfolioProjects || [`${card.skill} Sprint`],
+        endorsements: card.endorsements || [`Trusted for ${card.skill}`],
+        reviews: card.reviews || ['Clear, practical, and easy to apply.'],
+        completed_sessions: Number(card.completedSessions || 0),
+        repeat_learners: Number(card.repeatLearners || 0),
+        featured: Boolean(card.featured),
       }))
     );
   }
@@ -206,6 +301,16 @@ const seedDatabase = async () => {
           event.participants - (event.joined ? 1 : 0),
           0
         ),
+        format: event.format || 'Small-group room',
+        host: event.host || 'SkillSwap host',
+        location: event.location || 'Live in-app room',
+        category: event.category || 'General',
+        agenda: event.agenda || ['Quick welcome', 'Focused discussion blocks', 'Action recap'],
+        attendee_preview: event.attendeePreview || ['Mentors', 'Explorers', 'Builders'],
+        recurring_label: event.recurringLabel || 'Recurring weekly',
+        recap: event.recap || '',
+        thread_id: event.threadId || '',
+        reminder_set: Boolean(event.reminderSet),
       }))
     );
   }
@@ -222,6 +327,13 @@ const seedDatabase = async () => {
     country: demoUser.country,
     skills_offered: demoUser.skillsOffered,
     skills_to_learn: demoUser.skillsToLearn,
+    portfolio_projects: demoUser.portfolioProjects || [],
+    verified_skills: demoUser.verifiedSkills || demoUser.skillsOffered,
+    endorsements: demoUser.endorsements || [],
+    reviews: demoUser.reviews || [],
+    help_offered: demoUser.helpOffered || demoUser.skillsOffered,
+    help_wanted: demoUser.helpWanted || demoUser.skillsToLearn,
+    operator_mode: Boolean(demoUser.operatorMode ?? true),
     created_at: nowIso(),
   });
 
@@ -232,6 +344,12 @@ const seedDatabase = async () => {
     skillsTarget: seed.learningPlan.skillsTarget,
     skillsCompleted: seed.learningPlan.skillsCompleted,
     unreadCount: seed.messages.unreadCount,
+    humanUnread: seed.messages.unreadCount,
+    systemUnread: seed.notifications.filter((item) => !item.read).length,
+    bookingUnread: seed.sessions.filter((item) => item.status !== 'completed').length,
+    completedSessions: seed.sessions.filter((item) => item.status === 'completed').length,
+    roomsJoined: seed.events.filter((item) => item.joined).length,
+    savedProfiles: seed.discoveryCards.filter((item) => item.favorited).length,
   });
 
   const initialCardState = seed.discoveryCards
@@ -258,6 +376,14 @@ const seedDatabase = async () => {
         status: session.status,
         created_at: session.createdAt,
         calendar_url: session.calendarUrl,
+        format: session.format || 'Video call',
+        goal: session.goal || `Make progress on ${session.skill}.`,
+        note: session.note || '',
+        reminder_set: Boolean(session.reminderSet),
+        meeting_link: session.meetingLink || 'https://meet.skillsswap.app/session-room',
+        checklist: session.checklist || ['Bring one concrete blocker'],
+        resources: session.resources || ['Relevant links or screenshots'],
+        follow_up: session.followUp || 'Turn the session into one clear next move and confirm it in the thread.',
       }))
     );
   }
@@ -282,6 +408,8 @@ const seedDatabase = async () => {
         detail: notification.detail,
         created_at: notification.createdAt,
         read: Boolean(notification.read),
+        kind: notification.kind || 'system',
+        actor: notification.actor || '',
       }))
     );
   }
@@ -296,9 +424,45 @@ const seedDatabase = async () => {
         unread: Number(thread.unread),
         last_message: thread.lastMessage,
         last_at: thread.lastAt,
+        category: thread.category || 'mentor',
+        participant_role: thread.participantRole || 'Member',
+        quick_replies: thread.quickReplies || ['Sounds good', 'Can we reschedule?', 'Sharing updates now'],
       }))
     );
   }
+
+  if (demoUser.portfolioProjects?.length) {
+    await c.portfolioAssets.insertMany(
+      demoUser.portfolioProjects.slice(0, 2).map((title) => ({
+        id: newId('asset'),
+        user_id: demoUserId,
+        title,
+        url: `https://portfolio.skillsswap.app/${encodeURIComponent(String(title).toLowerCase().replace(/\s+/g, '-'))}`,
+        kind: 'link',
+        created_at: nowIso(),
+      }))
+    );
+  }
+
+  await c.roomMessages.insertMany(
+    seed.events.slice(0, 4).map((event) => ({
+      id: newId('roommsg'),
+      user_id: demoUserId,
+      event_id: event.id,
+      author: event.host || 'SkillSwap host',
+      role: 'Host',
+      message: `Welcome to ${event.title}. Share what you want to learn or contribute before we start.`,
+      created_at: nowIso(),
+      pinned: true,
+      system: true,
+    }))
+  );
+
+  await c.adminReports.insertMany([
+    { id: 'report-1', user_id: demoUserId, label: '2 room summaries need host recap', severity: 'medium', status: 'open' },
+    { id: 'report-2', user_id: demoUserId, label: '1 trending mentor should be featured', severity: 'low', status: 'open' },
+    { id: 'report-3', user_id: demoUserId, label: 'Booking completion dipped in one thread cluster', severity: 'high', status: 'open' },
+  ]);
 };
 
 const init = async () => {
@@ -324,6 +488,11 @@ const getUserByEmail = async (email) =>
 const getUserById = async (userId) =>
   rowToUser(await collections().users.findOne({ id: userId }));
 
+const requireOperator = async (userId) => {
+  const user = await getUserById(userId);
+  return Boolean(user?.operatorMode);
+};
+
 const verifyPassword = (userRow, password) =>
   Boolean(userRow && bcrypt.compareSync(String(password), userRow.password_hash));
 
@@ -340,6 +509,13 @@ const createUser = async ({ name, email, password }) => {
     country: '',
     skills_offered: [],
     skills_to_learn: [],
+    portfolio_projects: [],
+    verified_skills: [],
+    endorsements: [],
+    reviews: [],
+    help_offered: [],
+    help_wanted: [],
+    operator_mode: false,
     created_at: nowIso(),
   });
   await ensureUserState(id);
@@ -359,6 +535,13 @@ const updateProfile = async (userId, updates) => {
     country: updates.country ?? current.country,
     skillsOffered: updates.skillsOffered ?? current.skills_offered ?? [],
     skillsToLearn: updates.skillsToLearn ?? current.skills_to_learn ?? [],
+    portfolioProjects: updates.portfolioProjects ?? current.portfolio_projects ?? [],
+    verifiedSkills: updates.verifiedSkills ?? current.verified_skills ?? [],
+    endorsements: updates.endorsements ?? current.endorsements ?? [],
+    reviews: updates.reviews ?? current.reviews ?? [],
+    helpOffered: updates.helpOffered ?? current.help_offered ?? [],
+    helpWanted: updates.helpWanted ?? current.help_wanted ?? [],
+    operatorMode: updates.operatorMode ?? Boolean(current.operator_mode),
   };
 
   await collections().users.updateOne(
@@ -371,6 +554,13 @@ const updateProfile = async (userId, updates) => {
         country: next.country,
         skills_offered: next.skillsOffered,
         skills_to_learn: next.skillsToLearn,
+        portfolio_projects: next.portfolioProjects,
+        verified_skills: next.verifiedSkills,
+        endorsements: next.endorsements,
+        reviews: next.reviews,
+        help_offered: next.helpOffered,
+        help_wanted: next.helpWanted,
+        operator_mode: next.operatorMode,
       },
     }
   );
@@ -404,13 +594,7 @@ const getPublicOverview = async () => {
     .find({})
     .sort({ base_participants: -1, title: 1 })
     .limit(3)
-    .toArray()).map((event) => ({
-    id: event.id,
-    title: event.title,
-    description: event.description,
-    participants: Number(event.base_participants),
-    joined: false,
-  }));
+    .toArray()).map((event) => rowToEvent(event, false, Number(event.base_participants)));
 
   return {
     totalMembers: totalUsers + totalCards,
@@ -482,9 +666,71 @@ const getCardForUser = async (userId, cardId) => {
 const incrementUnreadMessages = async (userId, amount = 1) => {
   await collections().messages.updateOne(
     { user_id: userId },
-    { $inc: { unread_count: amount }, $setOnInsert: { user_id: userId } },
+    {
+      $inc: { unread_count: amount, human_unread: amount },
+      $setOnInsert: { user_id: userId },
+    },
     { upsert: true }
   );
+};
+
+const incrementBookingUnread = async (userId, amount = 1) => {
+  await collections().messages.updateOne(
+    { user_id: userId },
+    {
+      $inc: { unread_count: amount, booking_unread: amount },
+      $setOnInsert: { user_id: userId },
+    },
+    { upsert: true }
+  );
+};
+
+const incrementSystemUnread = async (userId, amount = 1) => {
+  await collections().messages.updateOne(
+    { user_id: userId },
+    {
+      $inc: { unread_count: amount, system_unread: amount },
+      $setOnInsert: { user_id: userId },
+    },
+    { upsert: true }
+  );
+};
+
+const upsertThread = async ({
+  id = newId('thread'),
+  userId,
+  participant,
+  topic,
+  category = 'mentor',
+  participantRole = 'Member',
+  message,
+  unread = 1,
+  quickReplies = ['Sounds good', 'Can we reschedule?', 'Sharing updates now'],
+}) => {
+  const existing = await collections().messageThreads.findOne({
+    user_id: userId,
+    participant,
+    topic,
+  });
+  const threadId = existing?.id || id;
+  await collections().messageThreads.updateOne(
+    { id: threadId },
+    {
+      $set: {
+        user_id: userId,
+        participant,
+        topic,
+        unread: (existing?.unread || 0) + unread,
+        last_message: message,
+        last_at: nowIso(),
+        category,
+        participant_role: participantRole,
+        quick_replies: quickReplies,
+      },
+    },
+    { upsert: true }
+  );
+  return threadId;
 };
 
 const toggleConnect = async (userId, cardId) => {
@@ -506,10 +752,21 @@ const toggleConnect = async (userId, cardId) => {
   );
   if (nextConnected) {
     await incrementUnreadMessages(userId, 1);
+    await upsertThread({
+      userId,
+      participant: current.card.name,
+      topic: `${current.card.skill} connection`,
+      category: 'mentor',
+      participantRole: current.card.persona === 'teacher' ? 'Mentor' : 'Explorer',
+      message: `Connection opened for ${current.card.skill}.`,
+      quickReplies: ['Excited to connect', 'Can we book a session?', 'Sharing context now'],
+    });
     await pushNotification(
       userId,
       'New connection',
-      `You connected with ${current.card.name} for ${current.card.skill}.`
+      `You connected with ${current.card.name} for ${current.card.skill}.`,
+      'human',
+      current.card.name
     );
   }
   const updated = await getCardForUser(userId, cardId);
@@ -537,7 +794,9 @@ const toggleFavorite = async (userId, cardId) => {
     await pushNotification(
       userId,
       'Saved profile',
-      `${current.card.name} was added to your favorites list.`
+      `${current.card.name} was added to your favorites list.`,
+      'system',
+      current.card.name
     );
   }
   const updated = await getCardForUser(userId, cardId);
@@ -551,7 +810,7 @@ const getSessions = async (userId) =>
     .sort({ created_at: -1 })
     .toArray()).map(rowToSession);
 
-const bookSession = async (userId, cardId, time) => {
+const bookSession = async (userId, cardId, time, details = {}) => {
   await init();
   const card = await collections().discoveryCards.findOne({ id: cardId });
   if (!card) {
@@ -571,6 +830,14 @@ const bookSession = async (userId, cardId, time) => {
     status: 'upcoming',
     created_at: createdAt,
     calendar_url: calendarUrl,
+    format: details.format || 'Video call',
+    goal: String(details.goal || `Make progress on ${card.skill}.`).trim(),
+    note: String(details.note || '').trim(),
+    reminder_set: false,
+    meeting_link: 'https://meet.skillsswap.app/session-room',
+    checklist: ['Bring one concrete blocker', 'Share current context or links', 'Define the one outcome the session should unlock'],
+    resources: ['Relevant links or screenshots', 'Current blocker summary', 'Desired outcome note'],
+    follow_up: 'Turn the session into one clear next move and confirm it in the thread.',
   });
 
   await collections().learningPlans.updateOne(
@@ -579,11 +846,22 @@ const bookSession = async (userId, cardId, time) => {
     { upsert: true }
   );
 
-  await incrementUnreadMessages(userId, 1);
+  await incrementBookingUnread(userId, 1);
+  await upsertThread({
+    userId,
+    participant: card.name,
+    topic: `${card.skill} session`,
+    category: 'booking',
+    participantRole: card.persona === 'teacher' ? 'Mentor' : 'Explorer',
+    message: `Booked for ${time}. Goal: ${String(details.goal || `Make progress on ${card.skill}.`).trim()}`,
+    quickReplies: ['Confirming this works', 'Can we move the slot?', 'Sharing prep now'],
+  });
   await pushNotification(
     userId,
     'Booking confirmed',
-    `${card.name} session is booked for ${time}.`
+    `${card.name} session is booked for ${time}.`,
+    'booking',
+    card.name
   );
 
   return rowToSession(await collections().sessions.findOne({ id }));
@@ -602,14 +880,44 @@ const updateSessionStatus = async (userId, sessionId, status) => {
     { id: sessionId, user_id: userId },
     { $set: { status } }
   );
+  if (status === 'completed') {
+    await collections().learningPlans.updateOne(
+      { user_id: userId },
+      { $inc: { completed_sessions: 1, skills_completed: 1 } }
+    );
+  }
   await pushNotification(
     userId,
     'Session status updated',
-    `${session.skill} with ${session.with_name} is now ${status}.`
+    `${session.skill} with ${session.with_name} is now ${status}.`,
+    'booking',
+    session.with_name
   );
   return rowToSession(
     await collections().sessions.findOne({ id: sessionId, user_id: userId })
   );
+};
+
+const updateSession = async (userId, sessionId, updates) => {
+  await init();
+  const session = await collections().sessions.findOne({ id: sessionId, user_id: userId });
+  if (!session) return null;
+  const next = {
+    status: updates.status ?? session.status,
+    time: updates.time ?? session.time,
+    format: updates.format ?? session.format,
+    goal: updates.goal ?? session.goal,
+    note: updates.note ?? session.note,
+    reminder_set:
+      typeof updates.reminderSet === 'boolean'
+        ? updates.reminderSet
+        : Boolean(session.reminder_set),
+  };
+  await collections().sessions.updateOne(
+    { id: sessionId, user_id: userId },
+    { $set: next }
+  );
+  return rowToSession(await collections().sessions.findOne({ id: sessionId, user_id: userId }));
 };
 
 const getSessionById = async (userId, sessionId) =>
@@ -629,13 +937,13 @@ const getEvents = async (userId) => {
       userJoined.add(join.event_id);
     }
   });
-  return events.map((event) => ({
-    id: event.id,
-    title: event.title,
-    description: event.description,
-    participants: Number(event.base_participants) + (joinCounts.get(event.id) || 0),
-    joined: userJoined.has(event.id),
-  }));
+  return events.map((event) =>
+    rowToEvent(
+      event,
+      userJoined.has(event.id),
+      Number(event.base_participants) + (joinCounts.get(event.id) || 0)
+    )
+  );
 };
 
 const joinEvent = async (userId, eventId) => {
@@ -656,13 +964,43 @@ const joinEvent = async (userId, eventId) => {
     });
     await collections().learningPlans.updateOne(
       { user_id: userId },
-      { $set: { challenge_joined: true }, $setOnInsert: { user_id: userId } },
+      {
+        $set: { challenge_joined: true },
+        $inc: { rooms_joined: 1 },
+        $setOnInsert: { user_id: userId },
+      },
       { upsert: true }
     );
-    await incrementUnreadMessages(userId, 1);
-    await pushNotification(userId, 'Event joined', `You joined "${event.title}".`);
+    await incrementSystemUnread(userId, 1);
+    const threadId = await upsertThread({
+      id: event.thread_id || newId('thread'),
+      userId,
+      participant: event.host || 'SkillSwap host',
+      topic: event.title,
+      category: 'community',
+      participantRole: 'Host',
+      message: `Joined room: ${event.title}.`,
+      quickReplies: ['Looking forward to it', 'What should I prepare?', 'Joining with a question'],
+    });
+    await collections().events.updateOne({ id: eventId }, { $set: { thread_id: threadId } });
+    await pushNotification(userId, 'Event joined', `You joined "${event.title}".`, 'community', event.title);
   }
   return (await getEvents(userId)).find((item) => item.id === eventId) || null;
+};
+
+const toggleEventReminder = async (userId, eventId) => {
+  await init();
+  const event = (await getEvents(userId)).find((item) => item.id === eventId);
+  if (!event) return null;
+  await collections().events.updateOne({ id: eventId }, { $set: { reminder_set: true } });
+  await pushNotification(
+    userId,
+    'Room reminder saved',
+    `${event.title} will stay pinned in your room alerts.`,
+    'community',
+    event.title
+  );
+  return { ...event, reminderSet: true };
 };
 
 const getLearningPlan = async (userId) => {
@@ -682,6 +1020,9 @@ const updateLearningPlan = async (userId, updates) => {
     challengeJoined: updates.challengeJoined ?? current.challengeJoined,
     skillsTarget: updates.skillsTarget ?? current.skillsTarget,
     skillsCompleted: updates.skillsCompleted ?? current.skillsCompleted,
+    completedSessions: updates.completedSessions ?? current.completedSessions,
+    roomsJoined: updates.roomsJoined ?? current.roomsJoined,
+    savedProfiles: updates.savedProfiles ?? current.savedProfiles,
   };
   await collections().learningPlans.updateOne(
     { user_id: userId },
@@ -692,6 +1033,9 @@ const updateLearningPlan = async (userId, updates) => {
         challenge_joined: next.challengeJoined,
         skills_target: next.skillsTarget,
         skills_completed: next.skillsCompleted,
+        completed_sessions: next.completedSessions,
+        rooms_joined: next.roomsJoined,
+        saved_profiles: next.savedProfiles,
       },
     }
   );
@@ -701,20 +1045,26 @@ const updateLearningPlan = async (userId, updates) => {
 const getMessages = async (userId) =>
   (await collections().messages.findOne({ user_id: userId })) || {
     unread_count: 0,
+    human_unread: 0,
+    system_unread: 0,
+    booking_unread: 0,
   };
 
 const markMessagesRead = async (userId) => {
   await init();
   await collections().messages.updateOne(
     { user_id: userId },
-    { $set: { unread_count: 0 }, $setOnInsert: { user_id: userId } },
+    {
+      $set: { unread_count: 0, human_unread: 0, system_unread: 0, booking_unread: 0 },
+      $setOnInsert: { user_id: userId },
+    },
     { upsert: true }
   );
   await collections().messageThreads.updateMany(
     { user_id: userId },
     { $set: { unread: 0 } }
   );
-  return { unreadCount: 0 };
+  return { unreadCount: 0, humanUnread: 0, systemUnread: 0, bookingUnread: 0 };
 };
 
 const getNotifications = async (userId) =>
@@ -762,7 +1112,9 @@ const replyThread = async (userId, threadId, message) => {
   await pushNotification(
     userId,
     'Message sent',
-    `Your reply was sent to ${thread.participant}.`
+    `Your reply was sent to ${thread.participant}.`,
+    thread.category === 'booking' ? 'booking' : 'human',
+    thread.participant
   );
   return rowToThread(
     await collections().messageThreads.findOne({
@@ -770,6 +1122,179 @@ const replyThread = async (userId, threadId, message) => {
       user_id: userId,
     })
   );
+};
+
+const getPortfolioAssets = async (userId) =>
+  (await collections().portfolioAssets.find({ user_id: userId }).sort({ created_at: -1 }).toArray()).map(rowToPortfolioAsset);
+
+const addPortfolioAsset = async (userId, payload) => {
+  await init();
+  const next = {
+    id: newId('asset'),
+    user_id: userId,
+    title: String(payload.title || '').trim(),
+    url: String(payload.url || '').trim(),
+    kind: String(payload.kind || 'link').trim(),
+    created_at: nowIso(),
+  };
+  await collections().portfolioAssets.insertOne(next);
+  return rowToPortfolioAsset(next);
+};
+
+const removePortfolioAsset = async (userId, assetId) => {
+  await init();
+  const result = await collections().portfolioAssets.deleteOne({ id: assetId, user_id: userId });
+  return result.deletedCount > 0;
+};
+
+const getEventDiscussion = async (userId, eventId) => {
+  await init();
+  const event = await collections().events.findOne({ id: eventId });
+  if (!event) return [];
+  return (await collections().roomMessages
+    .find({ user_id: userId, event_id: eventId })
+    .sort({ pinned: -1, created_at: 1 })
+    .toArray()).map(rowToRoomMessage);
+};
+
+const postEventDiscussion = async (userId, eventId, message) => {
+  await init();
+  const [event, user] = await Promise.all([
+    collections().events.findOne({ id: eventId }),
+    getUserById(userId),
+  ]);
+  if (!event || !user) return null;
+  const next = {
+    id: newId('roommsg'),
+    user_id: userId,
+    event_id: eventId,
+    author: user.name,
+    role: user.operatorMode ? 'Operator' : 'Member',
+    message: String(message).trim(),
+    created_at: nowIso(),
+    pinned: false,
+    system: false,
+  };
+  await collections().roomMessages.insertOne(next);
+  const threadId = event.thread_id || newId('thread');
+  await upsertThread({
+    id: threadId,
+    userId,
+    participant: event.host || 'SkillSwap host',
+    topic: event.title,
+    category: 'community',
+    participantRole: 'Host',
+    message: next.message,
+    quickReplies: ['Thanks for the context', 'I can help with that', 'Sharing my notes after the room'],
+  });
+  if (!event.thread_id) {
+    await collections().events.updateOne({ id: eventId }, { $set: { thread_id: threadId } });
+  }
+  await incrementSystemUnread(userId, 1);
+  return rowToRoomMessage(next);
+};
+
+const getAdminDashboard = async (userId) => {
+  await init();
+  const featuredMentors = (
+    await collections().discoveryCards
+      .find({ persona: 'teacher' })
+      .sort({ featured: -1, rating: -1 })
+      .limit(4)
+      .toArray()
+  ).map((row) => rowToCard(row));
+  const bookingHealthRow = await collections().sessions
+    .aggregate([
+      { $match: { user_id: userId } },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: 1 },
+          upcoming: { $sum: { $cond: [{ $eq: ['$status', 'upcoming'] }, 1, 0] } },
+          live: { $sum: { $cond: [{ $eq: ['$status', 'live'] }, 1, 0] } },
+          completed: { $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] } },
+        },
+      },
+    ])
+    .next();
+  const trendingSkills = (await collections().discoveryCards
+    .aggregate([
+      { $group: { _id: '$skill', count: { $sum: 1 } } },
+      { $sort: { count: -1, _id: 1 } },
+      { $limit: 5 },
+    ])
+    .toArray()).map((item) => item._id);
+  const roomHealth = (await getEvents(userId)).slice(0, 4).map((item) => ({
+    id: item.id,
+    title: item.title,
+    participants: item.participants,
+    joined: item.joined,
+    category: item.category,
+    recap: item.recap,
+  }));
+  const reports = (await collections().adminReports
+    .find({ user_id: userId })
+    .sort({ severity: -1, id: 1 })
+    .toArray()).map((row) => ({
+      id: row.id,
+      label: row.label,
+      severity: row.severity,
+      status: row.status,
+    }));
+  return {
+    featuredMentors,
+    trendingSkills,
+    bookingHealth: {
+      total: Number(bookingHealthRow?.total || 0),
+      upcoming: Number(bookingHealthRow?.upcoming || 0),
+      live: Number(bookingHealthRow?.live || 0),
+      completed: Number(bookingHealthRow?.completed || 0),
+    },
+    roomHealth,
+    reports,
+  };
+};
+
+const featureMentor = async (userId, cardId, featured) => {
+  await init();
+  if (!(await requireOperator(userId))) return null;
+  await collections().discoveryCards.updateOne(
+    { id: cardId, persona: 'teacher' },
+    { $set: { featured: Boolean(featured) } }
+  );
+  const updated = await getCardForUser(userId, cardId);
+  return updated ? rowToCard(updated.card, updated.state) : null;
+};
+
+const resolveAdminReport = async (userId, reportId) => {
+  await init();
+  if (!(await requireOperator(userId))) return null;
+  const existing = await collections().adminReports.findOne({ id: reportId, user_id: userId });
+  if (!existing) return null;
+  await collections().adminReports.updateOne(
+    { id: reportId, user_id: userId },
+    { $set: { status: 'resolved' } }
+  );
+  await pushNotification(
+    userId,
+    'Operator update',
+    'One report has been resolved and removed from the open queue.',
+    'system',
+    'Operator console'
+  );
+  return getAdminDashboard(userId);
+};
+
+const updateAdminEvent = async (userId, eventId, updates) => {
+  await init();
+  if (!(await requireOperator(userId))) return null;
+  const event = await collections().events.findOne({ id: eventId });
+  if (!event) return null;
+  await collections().events.updateOne(
+    { id: eventId },
+    { $set: { recap: typeof updates.recap === 'string' ? updates.recap.trim() : event.recap } }
+  );
+  return (await getEvents(userId)).find((item) => item.id === eventId) || null;
 };
 
 module.exports = {
@@ -786,10 +1311,12 @@ module.exports = {
   toggleFavorite,
   getSessions,
   bookSession,
+  updateSession,
   updateSessionStatus,
   getSessionById,
   getEvents,
   joinEvent,
+  toggleEventReminder,
   getLearningPlan,
   updateLearningPlan,
   getMessages,
@@ -798,4 +1325,13 @@ module.exports = {
   markNotificationsRead,
   getMessageThreads,
   replyThread,
+  getPortfolioAssets,
+  addPortfolioAsset,
+  removePortfolioAsset,
+  getEventDiscussion,
+  postEventDiscussion,
+  getAdminDashboard,
+  featureMentor,
+  resolveAdminReport,
+  updateAdminEvent,
 };
