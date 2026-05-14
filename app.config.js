@@ -1,4 +1,4 @@
-const fallbackApiBase = 'https://skills-swap-kappa.vercel.app/api';
+const fallbackApiBase = 'https://skillsswap-production-ead5.up.railway.app/api';
 const apiBase = process.env.EXPO_PUBLIC_API_BASE || fallbackApiBase;
 
 module.exports = {

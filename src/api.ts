@@ -16,7 +16,7 @@ import type {
 
 import Constants from 'expo-constants';
 
-const PRODUCTION_API_BASE = 'https://skills-swap-kappa.vercel.app/api';
+const PRODUCTION_API_BASE = 'https://skillsswap-production-ead5.up.railway.app/api';
 const configuredApiBase =
   process.env.EXPO_PUBLIC_API_BASE ||
   Constants.expoConfig?.extra?.apiBase ||

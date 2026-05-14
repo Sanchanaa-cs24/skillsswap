@@ -89,8 +89,8 @@ Start the web app locally:
 npm run web
 ```
 
-Current hosted web app:
-- [https://skills-swap-kappa.vercel.app](https://skills-swap-kappa.vercel.app)
+Current backend domain:
+- [https://skillsswap-production-ead5.up.railway.app](https://skillsswap-production-ead5.up.railway.app)
 
 ## Railway Backend
 

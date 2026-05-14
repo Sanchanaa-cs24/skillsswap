@@ -43,7 +43,7 @@ const local = (globalThis as { localStorage?: Storage }).localStorage;
 const readStoredToken = () => local?.getItem(TOKEN_KEY) ?? '';
 const storeToken = (token: string) => local?.setItem(TOKEN_KEY, token);
 const clearToken = () => local?.removeItem(TOKEN_KEY);
-const PRODUCTION_API_BASE = 'https://skills-swap-kappa.vercel.app/api';
+const PRODUCTION_API_BASE = 'https://skillsswap-production-ead5.up.railway.app/api';
 const normalizeApiBase = (value: string) => value.replace(/\/+$/, '');
 const configuredApiBase = normalizeApiBase(
   process.env.EXPO_PUBLIC_API_BASE || PRODUCTION_API_BASE
@@ -56,7 +56,7 @@ const runtimeOrigin =
 const calendarBaseUrl =
   isWeb
     ? runtimeOrigin || configuredApiBase.replace(/\/api$/, '')
-    : configuredApiBase.replace(/\/api$/, '') || 'https://skills-swap-kappa.vercel.app';
+    : configuredApiBase.replace(/\/api$/, '') || 'https://skillsswap-production-ead5.up.railway.app';
 const displayFont = Platform.select({
   web: '"Avenir Next", "SF Pro Display", system-ui, sans-serif',
   ios: 'Avenir Next',
